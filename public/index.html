@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>宠物寄养计费演算系统 · 可视化调试</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🐾</span>
+      <div>
+        <h1>宠物寄养计费演算系统</h1>
+        <p class="subtitle">可视化调试界面 · API: localhost:8880 / UI: localhost:3874</p>
+      </div>
+    </div>
+    <div class="status-bar" id="statusBar">
+      <span class="dot"></span>
+      <span id="statusText">连接中...</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel plans-panel">
+      <div class="panel-header">
+        <h2>收费方案管理</h2>
+        <div class="plan-filters" id="planFilters"></div>
+        <button class="btn primary" id="addPlanBtn">+ 新建方案</button>
+      </div>
+      <div class="threshold-hint">
+        单日单价阈值：<b id="minPrice">10</b> ~ <b id="maxPrice">500</b> 元 · 超出区间参数将被锁定
+      </div>
+      <div class="plans-list" id="plansList"></div>
+    </section>
+
+    <section class="panel editor-panel" id="editorPanel">
+      <div class="panel-header">
+        <h2 id="editorTitle">方案编辑器</h2>
+        <div>
+          <button class="btn ghost" id="cancelEditBtn" style="display:none;">取消</button>
+        </div>
+      </div>
+      <div class="editor-body" id="editorBody">
+        <div class="empty-hint">请选择一个方案进行编辑，或点击「新建方案」</div>
+      </div>
+    </section>
+
+    <section class="panel simulator-panel">
+      <div class="panel-header">
+        <h2>计费模拟器</h2>
+      </div>
+      <div class="simulator-form">
+        <div class="field">
+          <label>宠物体重 (kg)</label>
+          <input type="number" id="simWeight" value="8" min="0" step="0.1" />
+        </div>
+        <div class="field">
+          <label>寄养天数</label>
+          <input type="number" id="simDays" value="7" min="1" step="1" />
+        </div>
+        <button class="btn primary" id="calcBtn">开始演算</button>
+      </div>
+      <div class="simulator-result" id="simResult">
+        <div class="empty-hint">输入体重和天数，点击「开始演算」</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
