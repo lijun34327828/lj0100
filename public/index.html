@@ -59,6 +59,16 @@
           <label>寄养天数</label>
           <input type="number" id="simDays" value="7" min="1" step="1" />
         </div>
+        <div class="field">
+          <label>节假日天数</label>
+          <input type="number" id="simHolidayDays" value="0" min="0" step="1" />
+          <div class="hint">不能超过寄养总天数，按溢价系数计费</div>
+        </div>
+        <div class="field">
+          <label>同住宠物数量</label>
+          <input type="number" id="simCohabitingPets" value="1" min="1" step="1" />
+          <div class="hint">≥2只时从第二只起按阶梯折扣收费</div>
+        </div>
         <button class="btn primary" id="calcBtn">开始演算</button>
       </div>
       <div class="simulator-result" id="simResult">

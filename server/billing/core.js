@@ -12,7 +12,9 @@ const PLAN_TYPE_LABELS = {
 
 const THRESHOLDS = {
   MIN_DAILY_PRICE: 10,
-  MAX_DAILY_PRICE: 500
+  MAX_DAILY_PRICE: 500,
+  MIN_HOLIDAY_RATE: 1,
+  MAX_HOLIDAY_RATE: 3
 };
 
 const DAYS_IN_MONTH = 30;
@@ -84,6 +86,27 @@ function validatePlan(plan, allPlans, excludeId = null) {
       }
     }
   }
+  if (plan.holidayPremiumRate !== undefined) {
+    if (plan.holidayPremiumRate < THRESHOLDS.MIN_HOLIDAY_RATE || plan.holidayPremiumRate > THRESHOLDS.MAX_HOLIDAY_RATE) {
+      errors.push(`节假日加价系数必须在 ${THRESHOLDS.MIN_HOLIDAY_RATE} 到 ${THRESHOLDS.MAX_HOLIDAY_RATE} 之间`);
+    }
+  }
+  if (plan.multiPetDiscountTiers) {
+    for (const tier of plan.multiPetDiscountTiers) {
+      if (tier.minPets === undefined || tier.discount === undefined) {
+        errors.push('多宠折扣配置不完整');
+        break;
+      }
+      if (tier.minPets < 2) {
+        errors.push('多宠折扣阶梯的同住数量起点不能小于 2');
+        break;
+      }
+      if (tier.discount < 0 || tier.discount > 1) {
+        errors.push('多宠折扣系数必须在 0 到 1 之间');
+        break;
+      }
+    }
+  }
   errors.push(...validateMutualExclusion(plan, allPlans, excludeId));
   return errors;
 }
@@ -101,11 +124,27 @@ function getApplicableDiscount(days, tieredDiscounts) {
   return 1;
 }
 
+function getApplicableMultiPetDiscount(cohabitingPets, multiPetDiscountTiers) {
+  if (!cohabitingPets || cohabitingPets < 2) {
+    return 1;
+  }
+  if (!multiPetDiscountTiers || multiPetDiscountTiers.length === 0) {
+    return 1;
+  }
+  const sorted = [...multiPetDiscountTiers].sort((a, b) => b.minPets - a.minPets);
+  for (const tier of sorted) {
+    if (cohabitingPets >= tier.minPets) {
+      return tier.discount;
+    }
+  }
+  return 1;
+}
+
 function matchPlansByWeight(weight, plans) {
   return plans.filter(p => isWeightInRange(weight, p.weightRange));
 }
 
-function selectBestPlan(weight, days, plans) {
+function selectBestPlan(weight, days, plans, holidayDays = 0, cohabitingPets = 1) {
   const candidates = matchPlansByWeight(weight, plans);
   if (candidates.length === 0) {
     return null;
@@ -113,60 +152,113 @@ function selectBestPlan(weight, days, plans) {
   const sorted = [...candidates].sort((a, b) => {
     if (a.type === PLAN_TYPES.LONG_TERM && b.type !== PLAN_TYPES.LONG_TERM) return -1;
     if (b.type === PLAN_TYPES.LONG_TERM && a.type !== PLAN_TYPES.LONG_TERM) return 1;
-    const costA = calculatePlanCost(a, weight, days).finalTotal;
-    const costB = calculatePlanCost(b, weight, days).finalTotal;
+    const costA = calculatePlanCost(a, weight, days, holidayDays, cohabitingPets).finalTotal;
+    const costB = calculatePlanCost(b, weight, days, holidayDays, cohabitingPets).finalTotal;
     return costA - costB;
   });
   return sorted[0];
 }
 
-function calculatePlanCost(plan, weight, days) {
+function calculatePlanCost(plan, weight, days, holidayDays = 0, cohabitingPets = 1) {
+  const pets = Math.max(1, parseInt(cohabitingPets) || 1);
   const breakdown = [];
-  const baseFee = plan.dailyPrice * days;
+  const dailyPrice = plan.dailyPrice;
+  const premiumRate = plan.holidayPremiumRate || 1;
+  const surchargeRate = plan.weightSurchargeRate || 0;
+  const surchargeThreshold = plan.weightSurchargeThreshold || 0;
+  const tieredDiscount = getApplicableDiscount(days, plan.tieredDiscounts);
+  const multiDiscount = getApplicableMultiPetDiscount(pets, plan.multiPetDiscountTiers);
+
+  const baseFeeSingle = dailyPrice * days;
+  const baseFee = baseFeeSingle * pets;
   breakdown.push({
     type: '基础费',
-    description: `${PLAN_TYPE_LABELS[plan.type]} · ${plan.dailyPrice}元/天 × ${days}天`,
-    amount: baseFee
+    description: `${PLAN_TYPE_LABELS[plan.type]} · ${dailyPrice}元/天 × ${days}天 × ${pets}只`,
+    amount: Number(baseFee.toFixed(2))
   });
-  const surchargeRate = plan.weightSurchargeRate || 0;
-  if (surchargeRate > 0 && weight > (plan.weightSurchargeThreshold || 0)) {
-    const surcharge = baseFee * surchargeRate;
+
+  let holidayPremium = 0;
+  if (holidayDays > 0 && premiumRate > 1) {
+    const premiumDiff = premiumRate - 1;
+    const holidayPremiumSingle = dailyPrice * holidayDays * premiumDiff;
+    holidayPremium = holidayPremiumSingle * pets;
     breakdown.push({
-      type: '附加服务费',
-      description: `体重附加费（超出${plan.weightSurchargeThreshold || 0}kg × ${(surchargeRate * 100).toFixed(0)}%）`,
-      amount: surcharge
+      type: '节假日溢价',
+      description: `节假日${holidayDays}天 · ${dailyPrice}元/天 × 溢价${(premiumDiff * 100).toFixed(0)}% × ${pets}只（系数${premiumRate}）`,
+      amount: Number(holidayPremium.toFixed(2))
     });
   }
-  const subtotal = breakdown.reduce((sum, b) => sum + b.amount, 0);
-  const discount = getApplicableDiscount(days, plan.tieredDiscounts);
-  if (discount < 1) {
-    const discountAmount = subtotal * (1 - discount);
+
+  let weightSurcharge = 0;
+  if (surchargeRate > 0 && weight > surchargeThreshold) {
+    const surchargeSingle = baseFeeSingle * surchargeRate;
+    weightSurcharge = surchargeSingle * pets;
     breakdown.push({
-      type: '折扣减免',
-      description: `连续寄养${days}天享${(discount * 100).toFixed(0)}%折扣`,
-      amount: -discountAmount,
-      discount: discount
+      type: '体重附加费',
+      description: `体重${weight}kg>${surchargeThreshold}kg · 基础费×${(surchargeRate * 100).toFixed(0)}% × ${pets}只`,
+      amount: Number(weightSurcharge.toFixed(2))
     });
   }
-  const finalTotal = subtotal * discount;
+
+  const subtotalBeforeMulti = baseFee + holidayPremium + weightSurcharge;
+
+  let multiPetDiscountAmount = 0;
+  if (pets >= 2 && multiDiscount < 1) {
+    const singlePetSubtotal = subtotalBeforeMulti / pets;
+    const extraPets = pets - 1;
+    multiPetDiscountAmount = singlePetSubtotal * extraPets * (1 - multiDiscount);
+    breakdown.push({
+      type: '多宠折扣',
+      description: `同住${pets}只，第2只起${extraPets}只享${(multiDiscount * 100).toFixed(0)}%折优惠`,
+      amount: Number(-multiPetDiscountAmount.toFixed(2))
+    });
+  }
+
+  const subtotalBeforeTiered = subtotalBeforeMulti - multiPetDiscountAmount;
+
+  let tieredDiscountAmount = 0;
+  if (tieredDiscount < 1) {
+    tieredDiscountAmount = subtotalBeforeTiered * (1 - tieredDiscount);
+    breakdown.push({
+      type: '阶梯折扣',
+      description: `连续寄养${days}天享${(tieredDiscount * 100).toFixed(0)}%折`,
+      amount: Number(-tieredDiscountAmount.toFixed(2)),
+      discount: tieredDiscount
+    });
+  }
+
+  const finalTotal = subtotalBeforeTiered * tieredDiscount;
+
   const monthlyEquivalent = plan.type === PLAN_TYPES.LONG_TERM
     ? finalTotal
     : plan.dailyPrice * DAYS_IN_MONTH * getApplicableDiscount(DAYS_IN_MONTH, plan.tieredDiscounts || []);
+
   return {
     plan,
     breakdown,
-    subtotal,
+    subtotal: Number(subtotalBeforeMulti.toFixed(2)),
     finalTotal: Number(finalTotal.toFixed(2)),
     monthlyEquivalent: Number(monthlyEquivalent.toFixed(2))
   };
 }
 
-function calculateBest(weight, days, plans) {
+function calculateBest(weight, days, plans, holidayDays = 0, cohabitingPets = 1) {
+  if (holidayDays > days) {
+    return {
+      best: null,
+      allResults: [],
+      weight,
+      days,
+      holidayDays,
+      cohabitingPets,
+      errors: ['节假日天数不能大于寄养总天数']
+    };
+  }
   const matched = matchPlansByWeight(weight, plans);
-  const allResults = matched.map(p => calculatePlanCost(p, weight, days));
+  const allResults = matched.map(p => calculatePlanCost(p, weight, days, holidayDays, cohabitingPets));
   allResults.sort((a, b) => a.finalTotal - b.finalTotal);
   const best = allResults[0] || null;
-  return { best, allResults, weight, days };
+  return { best, allResults, weight, days, holidayDays, cohabitingPets };
 }
 
 module.exports = {
@@ -178,6 +270,7 @@ module.exports = {
   validateMutualExclusion,
   validatePlan,
   getApplicableDiscount,
+  getApplicableMultiPetDiscount,
   matchPlansByWeight,
   selectBestPlan,
   calculatePlanCost,

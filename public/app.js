@@ -96,6 +96,14 @@ function getDiscountDisplay(tieredDiscounts) {
     .join(' / ');
 }
 
+function getMultiPetDiscountDisplay(tiers) {
+  if (!tiers || tiers.length === 0) return '无';
+  return tiers
+    .sort((a, b) => a.minPets - b.minPets)
+    .map(t => `≥${t.minPets}只 ${(t.discount * 100).toFixed(0)}%`)
+    .join(' / ');
+}
+
 function renderPlans() {
   const container = document.getElementById('plansList');
   let plans = state.plans;
@@ -114,6 +122,7 @@ function renderPlans() {
         p.type === 'long_term' &&
         !(plan.weightRange.max < p.weightRange.min || p.weightRange.max < plan.weightRange.min)
       );
+    const holidayRate = plan.holidayPremiumRate || 1;
     return `
       <div class="plan-card ${selected ? 'selected' : ''} ${hasConflict ? 'conflict' : ''}" data-id="${plan.id}">
         <div class="plan-card-header">
@@ -126,6 +135,8 @@ function renderPlans() {
           <div class="row"><span>体重适配</span><b>${plan.weightRange.min} ~ ${plan.weightRange.max} kg</b></div>
           <div class="row"><span>单日单价</span><b>¥ ${plan.dailyPrice.toFixed(2)}</b></div>
           <div class="row"><span>阶梯折扣</span><b>${getDiscountDisplay(plan.tieredDiscounts)}</b></div>
+          <div class="row"><span>节假日系数</span><b>${holidayRate}×</b></div>
+          <div class="row"><span>多宠折扣</span><b>${getMultiPetDiscountDisplay(plan.multiPetDiscountTiers)}</b></div>
         </div>
         ${hasConflict ? '<div class="plan-card-conflict">⚠ 与其他长租方案体重区间重叠（互斥冲突）</div>' : ''}
         <div class="plan-card-actions">
@@ -205,9 +216,10 @@ function renderEditor() {
   title.textContent = state.isCreating ? '新建收费方案' : '编辑方案 · ' + (state.editingPlan.name || '未命名');
 
   const p = state.editingPlan;
-  const thresholds = state.meta ? state.meta.thresholds : { MIN_DAILY_PRICE: 10, MAX_DAILY_PRICE: 500 };
+  const thresholds = state.meta ? state.meta.thresholds : { MIN_DAILY_PRICE: 10, MAX_DAILY_PRICE: 500, MIN_HOLIDAY_RATE: 1, MAX_HOLIDAY_RATE: 3 };
   const priceLocked = p.dailyPrice !== undefined && (p.dailyPrice < thresholds.MIN_DAILY_PRICE || p.dailyPrice > thresholds.MAX_DAILY_PRICE);
   const hasErrors = state.validationErrors.length > 0;
+  const holidayRate = p.holidayPremiumRate !== undefined ? p.holidayPremiumRate : 1;
 
   body.innerHTML = `
     <div id="validationErrorsContainer">
@@ -226,6 +238,10 @@ function renderEditor() {
           <div class="monthly-preview-row">
             <span class="label">单日单价</span>
             <span class="value">¥ ${state.monthlyPreview.dailyPrice.toFixed(2)}</span>
+          </div>
+          <div class="monthly-preview-row">
+            <span class="label">节假日系数</span>
+            <span class="value">${state.monthlyPreview.holidayPremiumRate}×</span>
           </div>
           <div class="monthly-preview-row">
             <span class="label">适用折扣</span>
@@ -286,6 +302,22 @@ function renderEditor() {
     </div>
 
     <div class="form-section">
+      <div class="form-section-title">节假日溢价系数</div>
+      <div class="field">
+        <label>节假日加价系数 <span style="color:#92400e;">[${thresholds.MIN_HOLIDAY_RATE} ~ ${thresholds.MAX_HOLIDAY_RATE}]</span></label>
+        <input type="number" id="f_holiday" value="${holidayRate}" min="${thresholds.MIN_HOLIDAY_RATE}" max="${thresholds.MAX_HOLIDAY_RATE}" step="0.1" />
+        <div class="hint">1 表示不溢价，2 表示节假日单日价为基础日价的 2 倍</div>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <div class="form-section-title">多宠同住折扣阶梯</div>
+      <div class="tier-list" id="multiPetTierList"></div>
+      <button class="btn ghost small" id="addMultiPetTierBtn">+ 添加多宠折扣阶梯</button>
+      <div class="hint" style="margin-top:6px;">同住≥2只时生效，第2只起每只按对应系数收费；系数越小优惠越大</div>
+    </div>
+
+    <div class="form-section">
       <div class="form-section-title">体重附加服务费</div>
       <div class="field-row">
         <div class="field">
@@ -307,6 +339,7 @@ function renderEditor() {
   `;
 
   renderTierList();
+  renderMultiPetTierList();
   bindEditorEvents();
 }
 
@@ -330,6 +363,10 @@ function updateMonthlyPreviewDisplay() {
       <div class="monthly-preview-row">
         <span class="label">单日单价</span>
         <span class="value">¥ ${state.monthlyPreview.dailyPrice.toFixed(2)}</span>
+      </div>
+      <div class="monthly-preview-row">
+        <span class="label">节假日系数</span>
+        <span class="value">${state.monthlyPreview.holidayPremiumRate}×</span>
       </div>
       <div class="monthly-preview-row">
         <span class="label">适用折扣</span>
@@ -424,6 +461,42 @@ function renderTierList() {
   });
 }
 
+function renderMultiPetTierList() {
+  const list = document.getElementById('multiPetTierList');
+  if (!list) return;
+  const tiers = state.editingPlan.multiPetDiscountTiers || [];
+  if (tiers.length === 0) {
+    list.innerHTML = '<div style="font-size:12px;color:#9ca3af;padding:6px 0;">暂未设置多宠折扣阶梯（同住1只无优惠）</div>';
+    return;
+  }
+  list.innerHTML = tiers.map((t, i) => `
+    <div class="tier-item">
+      <input type="number" placeholder="同住≥N只" value="${t.minPets}" min="2" step="1" data-mp-idx="${i}" data-mp-field="minPets" />
+      <input type="number" placeholder="折扣系数(0~1)" value="${t.discount}" min="0" max="1" step="0.05" data-mp-idx="${i}" data-mp-field="discount" />
+      <button class="remove-btn" data-mp-remove="${i}" title="删除">×</button>
+    </div>
+  `).join('');
+  list.querySelectorAll('[data-mp-idx]').forEach(inp => {
+    inp.addEventListener('input', (e) => {
+      const idx = parseInt(e.target.dataset.mpIdx);
+      const field = e.target.dataset.mpField;
+      const val = parseFloat(e.target.value);
+      if (!isNaN(val)) {
+        state.editingPlan.multiPetDiscountTiers[idx][field] = val;
+        debouncedValidateAndPreview();
+      }
+    });
+  });
+  list.querySelectorAll('[data-mp-remove]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const idx = parseInt(btn.dataset.mpRemove);
+      state.editingPlan.multiPetDiscountTiers.splice(idx, 1);
+      renderMultiPetTierList();
+      await validateAndPreview();
+    });
+  });
+}
+
 function bindEditorEvents() {
   const fields = {
     f_name: 'name',
@@ -465,13 +538,26 @@ function bindEditorEvents() {
     });
   }
 
+  const holiday = document.getElementById('f_holiday');
+  if (holiday) {
+    holiday.addEventListener('input', () => {
+      const v = parseFloat(holiday.value);
+      if (!isNaN(v)) {
+        state.editingPlan.holidayPremiumRate = v;
+        debouncedValidateAndPreview();
+      }
+    });
+  }
+
   const srate = document.getElementById('f_srate');
   const sthreshold = document.getElementById('f_sthreshold');
   if (srate) srate.addEventListener('input', () => {
     state.editingPlan.weightSurchargeRate = parseFloat(srate.value) || 0;
+    debouncedValidateAndPreview();
   });
   if (sthreshold) sthreshold.addEventListener('input', () => {
     state.editingPlan.weightSurchargeThreshold = parseFloat(sthreshold.value) || 0;
+    debouncedValidateAndPreview();
   });
 
   const addTierBtn = document.getElementById('addTierBtn');
@@ -480,6 +566,16 @@ function bindEditorEvents() {
       if (!state.editingPlan.tieredDiscounts) state.editingPlan.tieredDiscounts = [];
       state.editingPlan.tieredDiscounts.push({ minDays: 7, discount: 0.9 });
       renderTierList();
+      await validateAndPreview();
+    });
+  }
+
+  const addMultiPetTierBtn = document.getElementById('addMultiPetTierBtn');
+  if (addMultiPetTierBtn) {
+    addMultiPetTierBtn.addEventListener('click', async () => {
+      if (!state.editingPlan.multiPetDiscountTiers) state.editingPlan.multiPetDiscountTiers = [];
+      state.editingPlan.multiPetDiscountTiers.push({ minPets: 2, discount: 0.9 });
+      renderMultiPetTierList();
       await validateAndPreview();
     });
   }
@@ -545,7 +641,9 @@ function createEmptyPlan() {
     dailyPrice: 50,
     tieredDiscounts: [{ minDays: 7, discount: 0.9 }],
     weightSurchargeRate: 0,
-    weightSurchargeThreshold: 0
+    weightSurchargeThreshold: 0,
+    holidayPremiumRate: 1,
+    multiPetDiscountTiers: [{ minPets: 2, discount: 0.9 }]
   };
 }
 
@@ -581,11 +679,25 @@ async function savePlan() {
 async function calculate() {
   const w = parseFloat(document.getElementById('simWeight').value);
   const d = parseInt(document.getElementById('simDays').value);
+  const hd = parseInt(document.getElementById('simHolidayDays').value) || 0;
+  const cp = parseInt(document.getElementById('simCohabitingPets').value) || 1;
   if (isNaN(w) || isNaN(d) || w < 0 || d < 1) {
     alert('请输入合法的体重和天数');
     return;
   }
-  const res = await api('/calculate', { method: 'POST', body: { weight: w, days: d } });
+  if (hd < 0) {
+    alert('节假日天数不能为负数');
+    return;
+  }
+  if (hd > d) {
+    alert('节假日天数不能大于寄养总天数');
+    return;
+  }
+  if (cp < 1) {
+    alert('同住宠物数量至少为 1 只');
+    return;
+  }
+  const res = await api('/calculate', { method: 'POST', body: { weight: w, days: d, holidayDays: hd, cohabitingPets: cp } });
   renderSimResult(res);
 }
 
@@ -599,12 +711,14 @@ function renderSimResult(res) {
   if (!data.best) {
     container.innerHTML = `<div class="no-match">
       <div class="no-match-title">未找到匹配方案</div>
-      <div class="no-match-desc">体重 ${data.weight}kg、寄养 ${data.days} 天 暂无可匹配的收费方案</div>
+      <div class="no-match-desc">体重 ${data.weight}kg、寄养 ${data.days} 天（节假日${data.holidayDays || 0}天）、同住${data.cohabitingPets || 1}只 暂无可匹配的收费方案</div>
     </div>`;
     return;
   }
   const best = data.best;
   const alternatives = data.allResults.filter(r => r.plan.id !== best.plan.id);
+  const breakdownSum = best.breakdown.reduce((s, b) => s + b.amount, 0);
+  const reconciled = Math.abs(breakdownSum - best.finalTotal) < 0.02;
 
   container.innerHTML = `
     <div class="result-best">
@@ -614,6 +728,9 @@ function renderSimResult(res) {
           <div class="result-best-plan">
             ${best.plan.name}
             <span class="type-tag ${best.plan.type}">${PLAN_TYPE_LABELS[best.plan.type]}</span>
+          </div>
+          <div class="result-best-sub" style="margin-top:4px;font-size:12px;color:#6b7280;">
+            体重${data.weight}kg · 寄养${data.days}天 · 节假日${data.holidayDays || 0}天 · 同住${data.cohabitingPets || 1}只
           </div>
         </div>
         <div class="result-best-total">¥ ${best.finalTotal.toFixed(2)}</div>
@@ -629,12 +746,18 @@ function renderSimResult(res) {
           <span class="desc">应付合计</span>
           <span class="amount">¥ ${best.finalTotal.toFixed(2)}</span>
         </div>
+        ${reconciled
+          ? `<div class="breakdown-check" style="font-size:11px;color:#059669;padding:4px 12px;border-top:1px dashed #d1d5db;">✓ 对账校验：明细项求和 ¥${breakdownSum.toFixed(2)} = 应付合计</div>`
+          : `<div class="breakdown-check" style="font-size:11px;color:#b91c1c;padding:4px 12px;border-top:1px dashed #d1d5db;">⚠ 对账异常：明细项求和 ¥${breakdownSum.toFixed(2)} ≠ ¥${best.finalTotal.toFixed(2)}</div>`}
       </div>
     </div>
 
     ${alternatives.length > 0 ? `
       <div class="result-alternatives-title">其他可匹配方案（${alternatives.length}）</div>
-      ${alternatives.map(a => `
+      ${alternatives.map(a => {
+        const aSum = a.breakdown.reduce((s, b) => s + b.amount, 0);
+        const aOk = Math.abs(aSum - a.finalTotal) < 0.02;
+        return `
         <div class="alternative-card">
           <div class="alternative-card-header">
             <div class="alternative-card-name">
@@ -646,9 +769,10 @@ function renderSimResult(res) {
           <div class="alternative-card-sub">
             单日 ${a.plan.dailyPrice}元 · 折扣 ${((a.breakdown.find(b => b.discount) || {}).discount || 1) * 100}%
             · 较最优贵 ¥ ${(a.finalTotal - best.finalTotal).toFixed(2)}
+            ${aOk ? '' : ' · ⚠对账异常'}
           </div>
         </div>
-      `).join('')}
+      `}).join('')}
     ` : ''}
   `;
 }
@@ -670,6 +794,8 @@ function init() {
   document.getElementById('calcBtn').addEventListener('click', calculate);
   document.getElementById('simWeight').addEventListener('keypress', (e) => { if (e.key === 'Enter') calculate(); });
   document.getElementById('simDays').addEventListener('keypress', (e) => { if (e.key === 'Enter') calculate(); });
+  document.getElementById('simHolidayDays').addEventListener('keypress', (e) => { if (e.key === 'Enter') calculate(); });
+  document.getElementById('simCohabitingPets').addEventListener('keypress', (e) => { if (e.key === 'Enter') calculate(); });
 }
 
 document.addEventListener('DOMContentLoaded', init);

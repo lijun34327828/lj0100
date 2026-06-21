@@ -88,7 +88,7 @@ apiApp.post('/api/validate/thresholds', (req, res) => {
 });
 
 apiApp.post('/api/calculate', (req, res) => {
-  const { weight, days } = req.body;
+  const { weight, days, holidayDays = 0, cohabitingPets = 1 } = req.body;
   if (weight === undefined || days === undefined) {
     return res.status(400).json({
       success: false,
@@ -101,8 +101,23 @@ apiApp.post('/api/calculate', (req, res) => {
       errors: ['参数不合法：体重不能为负数，天数至少1天']
     });
   }
+  if (holidayDays < 0 || cohabitingPets < 1) {
+    return res.status(400).json({
+      success: false,
+      errors: ['参数不合法：节假日天数不能为负数，同住宠物数量至少1只']
+    });
+  }
+  if (holidayDays > days) {
+    return res.status(400).json({
+      success: false,
+      errors: ['节假日天数不能大于寄养总天数']
+    });
+  }
   const allPlans = store.getAllPlans();
-  const result = billing.calculateBest(weight, days, allPlans);
+  const result = billing.calculateBest(weight, days, allPlans, holidayDays, cohabitingPets);
+  if (result.errors && result.errors.length > 0) {
+    return res.status(400).json({ success: false, errors: result.errors });
+  }
   res.json({ success: true, data: result });
 });
 
@@ -111,11 +126,14 @@ apiApp.post('/api/calculate/plan/:id', (req, res) => {
   if (!plan) {
     return res.status(404).json({ success: false, errors: ['方案不存在'] });
   }
-  const { weight, days } = req.body;
+  const { weight, days, holidayDays = 0, cohabitingPets = 1 } = req.body;
   if (weight === undefined || days === undefined) {
     return res.status(400).json({ success: false, errors: ['缺少参数'] });
   }
-  const result = billing.calculatePlanCost(plan, weight, days);
+  if (holidayDays > days) {
+    return res.status(400).json({ success: false, errors: ['节假日天数不能大于寄养总天数'] });
+  }
+  const result = billing.calculatePlanCost(plan, weight, days, holidayDays, cohabitingPets);
   res.json({ success: true, data: result });
 });
 
@@ -132,6 +150,7 @@ apiApp.post('/api/preview/monthly', (req, res) => {
     data: {
       monthlyTotal: Number(monthlyTotal.toFixed(2)),
       dailyPrice: plan.dailyPrice || 0,
+      holidayPremiumRate: plan.holidayPremiumRate || 1,
       daysInMonth: billing.DAYS_IN_MONTH,
       applicableDiscount: discount,
       thresholdErrors: errors
