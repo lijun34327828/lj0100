@@ -31,6 +31,21 @@ async function api(path, options = {}) {
   }
 }
 
+function debounce(fn, delay) {
+  let timer = null;
+  return function (...args) {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(this, args), delay);
+  };
+}
+
+function getPriceLocked() {
+  if (!state.editingPlan || state.editingPlan.dailyPrice === undefined) return false;
+  const thresholds = state.meta ? state.meta.thresholds : { MIN_DAILY_PRICE: 10, MAX_DAILY_PRICE: 500 };
+  const price = state.editingPlan.dailyPrice;
+  return price < thresholds.MIN_DAILY_PRICE || price > thresholds.MAX_DAILY_PRICE;
+}
+
 function setStatus(ok, msg) {
   const dot = document.getElementById('statusBar').querySelector('.dot');
   const text = document.getElementById('statusText');
@@ -195,32 +210,36 @@ function renderEditor() {
   const hasErrors = state.validationErrors.length > 0;
 
   body.innerHTML = `
-    ${hasErrors ? `
-      <div class="validation-errors">
-        <div class="validation-errors-title">⚠ 参数校验失败，无法保存</div>
-        <ul>${state.validationErrors.map(e => `<li>${e}</li>`).join('')}</ul>
-      </div>
-    ` : ''}
+    <div id="validationErrorsContainer">
+      ${hasErrors ? `
+        <div class="validation-errors">
+          <div class="validation-errors-title">⚠ 参数校验失败，无法保存</div>
+          <ul>${state.validationErrors.map(e => `<li>${e}</li>`).join('')}</ul>
+        </div>
+      ` : ''}
+    </div>
 
     <div class="monthly-preview" id="monthlyPreview">
       <div class="monthly-preview-title">📊 月度折算预览（${state.meta ? state.meta.daysInMonth : 30} 天标准月）</div>
-      ${state.monthlyPreview ? `
-        <div class="monthly-preview-row">
-          <span class="label">单日单价</span>
-          <span class="value">¥ ${state.monthlyPreview.dailyPrice.toFixed(2)}</span>
-        </div>
-        <div class="monthly-preview-row">
-          <span class="label">适用折扣</span>
-          <span class="value">${(state.monthlyPreview.applicableDiscount * 100).toFixed(0)}%</span>
-        </div>
-        <div class="monthly-preview-row" style="margin-top:8px;padding-top:8px;border-top:1px dashed #f59e0b;">
-          <span class="label">月度折算总价</span>
-          <span class="big">¥ ${state.monthlyPreview.monthlyTotal.toFixed(2)}</span>
-        </div>
-        ${state.monthlyPreview.thresholdErrors.length > 0 ? `
-          <div style="margin-top:8px;font-size:11px;color:#b91c1c;">⚠ ${state.monthlyPreview.thresholdErrors.join('，')}</div>
-        ` : ''}
-      ` : '<div style="font-size:12px;color:#92400e;">调整参数后实时刷新...</div>'}
+      <div id="monthlyPreviewBody">
+        ${state.monthlyPreview ? `
+          <div class="monthly-preview-row">
+            <span class="label">单日单价</span>
+            <span class="value">¥ ${state.monthlyPreview.dailyPrice.toFixed(2)}</span>
+          </div>
+          <div class="monthly-preview-row">
+            <span class="label">适用折扣</span>
+            <span class="value">${(state.monthlyPreview.applicableDiscount * 100).toFixed(0)}%</span>
+          </div>
+          <div class="monthly-preview-row" style="margin-top:8px;padding-top:8px;border-top:1px dashed #f59e0b;">
+            <span class="label">月度折算总价</span>
+            <span class="big">¥ ${state.monthlyPreview.monthlyTotal.toFixed(2)}</span>
+          </div>
+          ${state.monthlyPreview.thresholdErrors.length > 0 ? `
+            <div style="margin-top:8px;font-size:11px;color:#b91c1c;">⚠ ${state.monthlyPreview.thresholdErrors.join('，')}</div>
+          ` : ''}
+        ` : '<div style="font-size:12px;color:#92400e;">调整参数后实时刷新...</div>'}
+      </div>
     </div>
 
     <div class="form-section">
@@ -252,8 +271,10 @@ function renderEditor() {
       <div class="field">
         <label>单日单价 (元) <span style="color:#92400e;">[${thresholds.MIN_DAILY_PRICE} ~ ${thresholds.MAX_DAILY_PRICE}]</span></label>
         <input type="number" id="f_price" value="${p.dailyPrice !== undefined ? p.dailyPrice : ''}" min="0" step="1"
-          class="${priceLocked ? 'locked' : ''}" ${priceLocked ? '' : ''} />
-        ${priceLocked ? `<div class="error-hint">⚠ 参数超出阈值区间，已锁定，请修正后保存</div>` : ''}
+          class="${priceLocked ? 'locked' : ''}" ${priceLocked ? 'disabled' : ''} />
+        <div id="priceErrorHint">
+          ${priceLocked ? `<div class="error-hint">⚠ 参数超出阈值区间，已锁定，请修正后保存</div>` : ''}
+        </div>
       </div>
     </div>
 
@@ -289,6 +310,84 @@ function renderEditor() {
   bindEditorEvents();
 }
 
+function updateValidationErrorsDisplay() {
+  const container = document.getElementById('validationErrorsContainer');
+  if (!container) return;
+  const hasErrors = state.validationErrors.length > 0;
+  container.innerHTML = hasErrors ? `
+    <div class="validation-errors">
+      <div class="validation-errors-title">⚠ 参数校验失败，无法保存</div>
+      <ul>${state.validationErrors.map(e => `<li>${e}</li>`).join('')}</ul>
+    </div>
+  ` : '';
+}
+
+function updateMonthlyPreviewDisplay() {
+  const body = document.getElementById('monthlyPreviewBody');
+  if (!body) return;
+  if (state.monthlyPreview) {
+    body.innerHTML = `
+      <div class="monthly-preview-row">
+        <span class="label">单日单价</span>
+        <span class="value">¥ ${state.monthlyPreview.dailyPrice.toFixed(2)}</span>
+      </div>
+      <div class="monthly-preview-row">
+        <span class="label">适用折扣</span>
+        <span class="value">${(state.monthlyPreview.applicableDiscount * 100).toFixed(0)}%</span>
+      </div>
+      <div class="monthly-preview-row" style="margin-top:8px;padding-top:8px;border-top:1px dashed #f59e0b;">
+        <span class="label">月度折算总价</span>
+        <span class="big">¥ ${state.monthlyPreview.monthlyTotal.toFixed(2)}</span>
+      </div>
+      ${state.monthlyPreview.thresholdErrors.length > 0 ? `
+        <div style="margin-top:8px;font-size:11px;color:#b91c1c;">⚠ ${state.monthlyPreview.thresholdErrors.join('，')}</div>
+      ` : ''}
+    `;
+  } else {
+    body.innerHTML = '<div style="font-size:12px;color:#92400e;">调整参数后实时刷新...</div>';
+  }
+}
+
+function updatePriceLockState() {
+  const priceInput = document.getElementById('f_price');
+  const errorHint = document.getElementById('priceErrorHint');
+  if (!priceInput) return;
+  const locked = getPriceLocked();
+  if (locked) {
+    priceInput.classList.add('locked');
+    priceInput.disabled = true;
+  } else {
+    priceInput.classList.remove('locked');
+    priceInput.disabled = false;
+  }
+  if (errorHint) {
+    errorHint.innerHTML = locked ? '<div class="error-hint">⚠ 参数超出阈值区间，已锁定，请修正后保存</div>' : '';
+  }
+}
+
+function updateSaveButtonState() {
+  const saveBtn = document.getElementById('saveBtn');
+  if (!saveBtn) return;
+  const hasErrors = state.validationErrors.length > 0;
+  const priceLocked = getPriceLocked();
+  saveBtn.disabled = hasErrors || priceLocked;
+}
+
+function updateEditorTitle() {
+  const title = document.getElementById('editorTitle');
+  if (!title || !state.editingPlan) return;
+  title.textContent = state.isCreating ? '新建收费方案' : '编辑方案 · ' + (state.editingPlan.name || '未命名');
+}
+
+function updateEditorUI() {
+  if (!state.editingPlan) return;
+  updateValidationErrorsDisplay();
+  updateMonthlyPreviewDisplay();
+  updatePriceLockState();
+  updateSaveButtonState();
+  updateEditorTitle();
+}
+
 function renderTierList() {
   const list = document.getElementById('tierList');
   if (!list) return;
@@ -305,13 +404,13 @@ function renderTierList() {
     </div>
   `).join('');
   list.querySelectorAll('[data-tier-idx]').forEach(inp => {
-    inp.addEventListener('input', async (e) => {
+    inp.addEventListener('input', (e) => {
       const idx = parseInt(e.target.dataset.tierIdx);
       const field = e.target.dataset.tierField;
       const val = parseFloat(e.target.value);
       if (!isNaN(val)) {
         state.editingPlan.tieredDiscounts[idx][field] = val;
-        await validateAndPreview();
+        debouncedValidateAndPreview();
       }
     });
   });
@@ -333,9 +432,9 @@ function bindEditorEvents() {
   Object.entries(fields).forEach(([id, key]) => {
     const el = document.getElementById(id);
     if (el) {
-      el.addEventListener('input', async () => {
+      el.addEventListener('input', () => {
         state.editingPlan[key] = el.type === 'number' ? parseFloat(el.value) : el.value;
-        await validateAndPreview();
+        debouncedValidateAndPreview();
       });
       el.addEventListener('change', async () => {
         state.editingPlan[key] = el.type === 'number' ? parseFloat(el.value) : el.value;
@@ -347,12 +446,12 @@ function bindEditorEvents() {
   const wmin = document.getElementById('f_wmin');
   const wmax = document.getElementById('f_wmax');
   if (wmin && wmax) {
-    const handler = async () => {
+    const handler = () => {
       state.editingPlan.weightRange = {
         min: parseFloat(wmin.value) || 0,
         max: parseFloat(wmax.value) || 0
       };
-      await validateAndPreview();
+      debouncedValidateAndPreview();
     };
     wmin.addEventListener('input', handler);
     wmax.addEventListener('input', handler);
@@ -360,9 +459,9 @@ function bindEditorEvents() {
 
   const price = document.getElementById('f_price');
   if (price) {
-    price.addEventListener('input', async () => {
+    price.addEventListener('input', () => {
       state.editingPlan.dailyPrice = parseFloat(price.value);
-      await validateAndPreview();
+      debouncedValidateAndPreview();
     });
   }
 
@@ -409,6 +508,7 @@ function bindEditorEvents() {
 }
 
 async function validateAndPreview() {
+  if (!state.editingPlan) return;
   const excludeId = state.isCreating ? null : state.selectedPlanId;
   const res = await api('/validate', {
     method: 'POST',
@@ -416,17 +516,24 @@ async function validateAndPreview() {
   });
   state.validationErrors = res.errors || [];
   await updateMonthlyPreview();
-  renderEditor();
+  updateEditorUI();
 }
 
+const debouncedValidateAndPreview = debounce(validateAndPreview, 250);
+
 async function updateMonthlyPreview() {
-  if (!state.editingPlan) { state.monthlyPreview = null; return; }
+  if (!state.editingPlan) {
+    state.monthlyPreview = null;
+    updateMonthlyPreviewDisplay();
+    return;
+  }
   const res = await api('/preview/monthly', {
     method: 'POST',
     body: { plan: state.editingPlan }
   });
   if (res.success) {
     state.monthlyPreview = res.data;
+    updateMonthlyPreviewDisplay();
   }
 }
 
